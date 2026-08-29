@@ -1,0 +1,14 @@
+# Gradle
+flink-job/.gradle/
+flink-job/build/
+
+# Python venv
+generator/.venv/
+generator/__pycache__/
+
+# editor/tool caches
+.impeccable/
+**/.impeccable/
+
+# macOS
+.DS_Store
