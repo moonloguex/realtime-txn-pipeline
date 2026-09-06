@@ -12,3 +12,7 @@ generator/__pycache__/
 
 # macOS
 .DS_Store
+
+# SSH keys
+.gitPassPhrase
+.gitPassPhrase.pub
