@@ -13,6 +13,7 @@ import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.windowing.assigners.TumblingEventTimeWindows;
 import org.apache.flink.streaming.api.windowing.time.Time;
+import org.apache.kafka.clients.consumer.OffsetResetStrategy;
 
 import java.sql.Timestamp;
 import java.time.Duration;
@@ -29,7 +30,21 @@ public class TransactionProcessor {
 
     private static final String KAFKA_BOOTSTRAP_SERVERS = "localhost:19092";
     private static final String KAFKA_TOPIC = "cdc.public.transactions";
-    private static final String CLICKHOUSE_URL = "jdbc:clickhouse://localhost:8123/default";
+    // http_keep_alive=false: ClickHouse's HTTP server closes idle connections after
+    // keep_alive_timeout=10s (infra default), but the clickhouse-jdbc:0.8.6 Apache
+    // HttpClient5 pool's stale-connection check (ahc_validate_after_inactivity, default
+    // 5000ms) doesn't reliably catch every connection the server has already closed
+    // before this sink reuses it - observed as sockets stuck in CLOSE_WAIT to :8123
+    // (`lsof -p <pid> | grep 8123`) while the job ran continuously with no restarts.
+    // A write on one of these racing/stale connections throws, JdbcOutputFormat retries
+    // the whole batch (withMaxRetries below), and because the original request had often
+    // already reached ClickHouse, the retry produces a genuine duplicate INSERT - this is
+    // what caused the growing (account_id, reason, detected_at) duplicates in
+    // anomaly_flags and the identical-value duplicate rows in windowed_txn_stats (see
+    // _workspace/02_flink_rules.md §7). Disabling keep-alive means every insert opens a
+    // fresh connection - negligible cost at this pipeline's throughput (batches every
+    // 1-10s) - and removes the staleness race entirely rather than just narrowing it.
+    private static final String CLICKHOUSE_URL = "jdbc:clickhouse://localhost:8123/default?http_keep_alive=false";
     private static final String CLICKHOUSE_DRIVER = "com.clickhouse.jdbc.ClickHouseDriver";
 
     public static void main(String[] args) throws Exception {
@@ -40,7 +55,14 @@ public class TransactionProcessor {
                 .setBootstrapServers(KAFKA_BOOTSTRAP_SERVERS)
                 .setTopics(KAFKA_TOPIC)
                 .setGroupId("txn-flink-processor")
-                .setStartingOffsets(OffsetsInitializer.earliest())
+                // committedOffsets(EARLIEST), not earliest(): earliest() always replays the whole
+                // topic on every cold start of this main()-run job (no savepoint restore wired up),
+                // which is what caused millions of duplicate anomaly_flags rows (same account_id +
+                // reason + detected_at repeated ~1200x — see _workspace/02_flink_rules.md). Once this
+                // consumer group has committed progress (Flink commits offsets to Kafka on checkpoint
+                // completion since checkpointing is enabled below), a restart resumes from there;
+                // only a genuinely new group falls back to earliest.
+                .setStartingOffsets(OffsetsInitializer.committedOffsets(OffsetResetStrategy.EARLIEST))
                 .setValueOnlyDeserializer(new SimpleStringSchema())
                 .build();
 
@@ -49,7 +71,16 @@ public class TransactionProcessor {
                 .flatMap(new DebeziumEventParser())
                 .assignTimestampsAndWatermarks(
                         WatermarkStrategy.<TransactionEvent>forBoundedOutOfOrderness(Duration.ofSeconds(5))
-                                .withTimestampAssigner((event, ts) -> event.createdAt.toEpochMilli()));
+                                .withTimestampAssigner((event, ts) -> event.createdAt.toEpochMilli())
+                                // cdc.public.transactions is a single-partition topic (verified via
+                                // `kafka-topics.sh --describe`; KAFKA_CFG_NUM_PARTITIONS is a Bitnami
+                                // env var and has no effect on the apache/kafka image this stack uses,
+                                // so the topic falls back to Kafka's 1-partition default). At ~0.8
+                                // events/sec system-wide, and with generator gaps, that one partition
+                                // still goes quiet often enough that without idleness the watermark
+                                // never advances and no 1-minute tumbling window ever closes - this is
+                                // why windowed_txn_stats stayed at 0 rows.
+                                .withIdleness(Duration.ofSeconds(30)));
 
         KeyedStream<TransactionEvent, Integer> keyed = events.keyBy(e -> e.accountId);
 
@@ -64,7 +95,7 @@ public class TransactionProcessor {
         balances.addSink(JdbcSink.sink(
                 "INSERT INTO balance_snapshot (account_id, balance, updated_at) VALUES (?, ?, ?)",
                 (statement, b) -> {
-                    statement.setString(1, String.valueOf(b.accountId));
+                    statement.setInt(1, b.accountId);
                     statement.setBigDecimal(2, b.balance);
                     statement.setTimestamp(3, Timestamp.from(b.updatedAt));
                 },
@@ -76,7 +107,7 @@ public class TransactionProcessor {
                 "INSERT INTO windowed_txn_stats (window_start, account_id, txn_count, txn_amount) VALUES (?, ?, ?, ?)",
                 (statement, s) -> {
                     statement.setTimestamp(1, Timestamp.from(s.windowStart));
-                    statement.setString(2, String.valueOf(s.accountId));
+                    statement.setInt(2, s.accountId);
                     statement.setLong(3, s.txnCount);
                     statement.setBigDecimal(4, s.txnAmount);
                 },
@@ -87,7 +118,7 @@ public class TransactionProcessor {
         anomalies.addSink(JdbcSink.sink(
                 "INSERT INTO anomaly_flags (account_id, reason, detected_at) VALUES (?, ?, ?)",
                 (statement, a) -> {
-                    statement.setString(1, String.valueOf(a.accountId));
+                    statement.setInt(1, a.accountId);
                     statement.setString(2, a.reason);
                     statement.setTimestamp(3, Timestamp.from(a.detectedAt));
                 },

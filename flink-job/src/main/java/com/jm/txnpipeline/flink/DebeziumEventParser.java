@@ -18,6 +18,13 @@ public class DebeziumEventParser implements FlatMapFunction<String, TransactionE
     @Override
     public void flatMap(String value, Collector<TransactionEvent> out) throws Exception {
         JsonNode root = MAPPER.readTree(value);
+        JsonNode opNode = root.get("op");
+        // "c" = streaming insert. Without this check "r" (initial-snapshot read) and "u"
+        // (update) events also pass the after != null test below and get double-counted
+        // as new transactions - e.g. every row Debezium re-emits on a snapshot re-run.
+        if (opNode == null || !"c".equals(opNode.asText())) {
+            return;
+        }
         JsonNode after = root.get("after");
         if (after == null || after.isNull()) {
             return;
