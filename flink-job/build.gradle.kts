@@ -34,6 +34,18 @@ dependencies {
     }
     implementation("com.fasterxml.jackson.core:jackson-databind:2.17.1")
     runtimeOnly("org.slf4j:slf4j-simple:2.0.7")
+
+    testImplementation(platform("org.junit:junit-bom:5.11.4"))
+    testImplementation("org.junit.jupiter:junit-jupiter")
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+    testImplementation("org.apache.flink:flink-test-utils:$flinkVersion")
+    // operator test harnesses (KeyedOneInputStreamOperatorTestHarness etc.)
+    testImplementation("org.apache.flink:flink-streaming-java:$flinkVersion:tests")
+    testImplementation("org.apache.flink:flink-runtime:$flinkVersion:tests")
+}
+
+tasks.test {
+    useJUnitPlatform()
 }
 
 tasks.named<JavaExec>("run") {
