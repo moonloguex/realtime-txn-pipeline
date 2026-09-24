@@ -127,7 +127,7 @@ realtime-txn-pipeline/
 - **Phase 2, 3 완료**: Flink job(잔액/윈도우 집계/이상거래), ClickHouse 스키마, Grafana 대시보드, 데이터 검증까지 엔드투엔드로 가동 및 검증 완료 (2026-09-06).
 - **§7-5 중복 삽입 근본 원인 해결 (2026-09-13)**: jdbc-v2 드라이버 버그 우회 완료, dedup 백스톱은 방어선으로 유지.
 - **남은 과제**:
-  - clickhouse-java 업스트림에 `PreparedStatementImpl` 배치 미초기화 버그 보고 (최신 버전에서 이미 수정됐는지 먼저 확인)
+  - clickhouse-java 0.9.2+로 업그레이드 후 `ReconnectSafeBatchStatementExecutor` 제거 여부 검증 — 이 버그는 업스트림 [#2548](https://github.com/ClickHouse/clickhouse-java/issues/2548)로 이미 보고되어 v0.9.2(PR #2549)에서 수정됨을 2026-09-24 확인
   - Kafka 파티션 수 실제 반영 (`KAFKA_CFG_*`는 `apache/kafka` 이미지에서 무시되어 현재 1파티션)
   - CDC `op=u/d`(거래 정정·취소) 처리 — 현재는 `op=c`만 처리
   - 테스트 코드(Flink operator test harness, Testcontainers E2E)와 장애 주입 후 정합성 자동 검증

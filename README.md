@@ -70,6 +70,7 @@ flowchart LR
   - 드라이버 바이트코드를 확인해 보니 `ClickHouseDriver`는 기본적으로 V2 드라이버로 위임하고, `http_keep_alive`는 V2가 **참조조차 하지 않는** V1 전용 옵션
   - 라이브 재현 중 소켓 수는 고정, Flink 재시도 로그는 0건인데도 중복은 계속 발생
 - **근본 원인**: `com.clickhouse:jdbc-v2:0.8.6`의 `PreparedStatementImpl`이 리터럴-VALUES 배치 INSERT 경로에서 `executeBatch()` 후 내부 배치 리스트를 비우지 않음 (JDBC 표준 계약 위반). Flink JDBC sink는 같은 `PreparedStatement`를 재사용하므로 **매 flush마다 과거 행 전체가 재전송**됨
+- **업스트림 대조**: 독립적으로 규명한 뒤 확인해 보니 0.8.6 회귀 버그로 이미 보고([clickhouse-java#2548](https://github.com/ClickHouse/clickhouse-java/issues/2548))되어 v0.9.2에서 수정([#2549](https://github.com/ClickHouse/clickhouse-java/pull/2549))된 상태 — 진단이 메인테이너의 결론과 일치함을 확인
 - **수정**: `executeBatch()` 직후 `PreparedStatement`를 재생성하는 [`ReconnectSafeBatchStatementExecutor`](flink-job/src/main/java/com/jm/txnpipeline/flink/ReconnectSafeBatchStatementExecutor.java)로 세 sink를 교체
 - **검증**: 수정 전 8분 만에 중복 키 49개 → 수정 후 4시간 48분 동안 **0개**, 체크포인트 소요시간 영향 없음(4~58ms)
 - JDBC sink는 구조적으로 at-least-once이므로 `ReplacingMergeTree` + `FINAL` 조회를 방어선으로 유지
@@ -108,7 +109,7 @@ pip install -r requirements.txt && python generate_transactions.py
 
 ## 로드맵
 
-- [ ] clickhouse-java 업스트림에 드라이버 버그 보고
+- [ ] clickhouse-java 0.9.2+로 업그레이드 후 우회 코드 제거 여부 검증 (업스트림 #2548에서 이미 수정됨)
 - [ ] 테스트: Flink operator test harness 단위 테스트, Testcontainers E2E 정합성 테스트
 - [ ] 장애 주입(Flink/Connect/ClickHouse 강제 종료) 후 정합성 자동 대조
 - [ ] CDC `UPDATE`/`DELETE`(거래 정정·취소) 처리
