@@ -1,6 +1,6 @@
 # 실시간 거래 데이터 파이프라인 — 아키텍처 및 의사결정 기록
 
-작성일: 2026-08-29 (2026-09-06 갱신) / 현재 상태: Phase 0~3 완료 (Flink 집계/이상거래, ClickHouse 스키마, Grafana 대시보드, 데이터 검증까지 엔드투엔드 가동 중), Phase 4는 스트레치로 보류
+작성일: 2026-08-29 (2026-09-23 갱신) / 현재 상태: Phase 0~3 완료 (Flink 집계/이상거래, ClickHouse 스키마, Grafana 대시보드, 데이터 검증까지 엔드투엔드 가동 중), JDBC sink 중복 삽입 근본 원인 규명·수정 완료(2026-09-13), Phase 4는 스트레치로 보류
 
 ## 1. 배경과 목적
 
@@ -64,7 +64,12 @@ CDC 원본 이벤트가 담기는 Kafka 토픽(`cdc.public.transactions`)의 리
 2. **거래 금액(`amount`)이 깨져서 나옴** — Debezium이 Postgres `NUMERIC` 컬럼을 기본적으로 정밀도 보존을 위해 바이너리(base64)로 직렬화하는데, 스키마 없는 JSON(`schemas.enable: false`)으로 보면 사람이 읽을 수 없는 문자열(`"K2+I"` 등)로 나옴. 커넥터 설정에 `decimal.handling.mode: string`을 추가해 금액이 `"-25810.00"`처럼 정확한 문자열로 나오도록 수정. 이 과정에서 기존 커넥터/replication slot/publication/Kafka 토픽/`transactions` 테이블 데이터를 모두 초기화하고 재등록함.
 3. **`anomaly_flags`에 580만 건 폭증 (Phase 2)** — `TransactionProcessor`의 Kafka source가 `OffsetsInitializer.earliest()`를 쓰고 있었는데, 이 job은 세이브포인트 복원이 없는 로컬 임베디드 클러스터라 재시작(수동/자동 모두)마다 토픽 전체를 처음부터 재처리했다. `BalanceAndAnomalyFunction`이 이벤트마다 즉시 이상거래를 내보내는 구조라 재처리될 때마다 같은 이벤트에 대해 같은 플래그가 그대로 다시 쌓여 수 시간 만에 580만 건까지 누적됐다. `OffsetsInitializer.committedOffsets(EARLIEST)`로 변경해 커밋된 오프셋이 있으면 거기서 재개하도록 수정.
 4. **`windowed_txn_stats`가 계속 0행** — watermark 전략(`forBoundedOutOfOrderness(5s)`)에 idleness 설정이 없어서, 낮은 트래픽(~0.8건/초)에서 파티션이 자주 유휴 상태가 되면 그 파티션의 워터마크가 전체 최솟값을 영구히 붙잡아 1분 tumbling window가 한 번도 안 닫혔다. `withIdleness(30s)`를 추가해 유휴 파티션을 워터마크 계산에서 제외하도록 수정. (참고: 이 조사 과정에서 `KAFKA_CFG_NUM_PARTITIONS=3` 같은 `KAFKA_CFG_*` 환경변수가 Bitnami 이미지 전용이라 지금 쓰는 `apache/kafka` 공식 이미지에는 적용되지 않고, 실제 토픽은 파티션 1개로 생성되어 있었음을 확인함 — §4의 Kafka 설정 관련 향후 참고사항.)
-5. **`anomaly_flags`/`windowed_txn_stats` 실시간 중복 삽입** — 위 두 버그를 고친 뒤에도, ClickHouse가 `keep_alive_timeout=10s`로 유휴 HTTP 커넥션을 닫는데 `clickhouse-jdbc:0.8.6:http` 클라이언트가 그걸 감지 못 하고 재사용하려다 실패 → `JdbcExecutionOptions.withMaxRetries(3)`이 배치를 재실행 → 원 요청이 이미 서버에 도달했었다면 진짜 중복 INSERT가 발생했다. `http_keep_alive=false`로 완화를 시도했으나 라이브 검증에서 CLOSE_WAIT 소켓이 완전히는 사라지지 않아 근본 원인이 100% 해소되지는 않았음 — 대신 `windowed_txn_stats`/`anomaly_flags`를 버전 컬럼 없는 `ReplacingMergeTree()`로 전환해 스키마 레벨 dedup 백스톱을 두었고(조회 시 `FINAL` 필수), 검증 결과 이 백스톱이 완전히 커버함을 확인했다. **커넥션 재사용 자체를 원천 차단하는 근본 수정은 향후 과제로 남음.**
+5. **`anomaly_flags`/`windowed_txn_stats` 실시간 중복 삽입 — 오진 후 재조사로 근본 원인 규명 (2026-09-13)**
+   - **1차 진단(틀림)**: ClickHouse가 `keep_alive_timeout=10s`로 닫은 유휴 HTTP 커넥션을 클라이언트가 재사용하다 실패 → `withMaxRetries(3)` 재시도로 중복 INSERT가 난다고 보고 `http_keep_alive=false`를 적용했다. CLOSE_WAIT 소켓이 사라지지 않아 "근본 원인 미해결"로 남기고, 대신 두 테이블을 버전 컬럼 없는 `ReplacingMergeTree()`로 바꿔 스키마 레벨 dedup 백스톱을 두었다(조회 시 `FINAL` 필수).
+   - **가설 반증**: 재조사 결과 `com.clickhouse.jdbc.ClickHouseDriver`는 URL에 `clickhouse.jdbc.v1=true`가 없으면 V2 드라이버로 위임하는 프록시였고, `http_keep_alive`는 V2가 참조조차 하지 않는 V1 전용 옵션이었다. 라이브 재현에서도 소켓 수는 고정(9개)인데 중복은 계속 발생했고, Flink의 재시도 로그(`JDBC executeBatch error`)는 0건이었다 — 커넥션 재사용·재시도 가설과 정면으로 모순.
+   - **진짜 원인**: `com.clickhouse:jdbc-v2:0.8.6`의 `PreparedStatementImpl`이 리터럴-VALUES INSERT 전용 fast-path에서 내부 `batchValues` 리스트를 `executeBatch()` 이후에도 비우지 않는 드라이버 버그(`clearBatch()`도 오버라이드 안 함). Flink의 `SimpleBatchStatementExecutor`는 sink 수명 내내 같은 `PreparedStatement`를 재사용하므로, 매 flush마다 그 statement에 추가된 **모든 과거 행이 재전송**됐다(오래된 행일수록 중복 배율 증가).
+   - **수정**: `ReconnectSafeBatchStatementExecutor`를 새로 만들어 `executeBatch()` 성공 직후 `PreparedStatement`를 닫고 재생성하도록 하고, 세 sink 모두 이를 쓰도록 `TransactionProcessor`에서 `GenericJdbcSinkFunction`+`JdbcOutputFormat`을 직접 조립했다. 약 4시간 48분 연속 가동(체크포인트 86회, 예외 0건) 동안 신규 `anomaly_flags` 115행 / `windowed_txn_stats` 109행 중 **중복 키 0건**(수정 전에는 8분 만에 각각 19개/30개 키 중복). 체크포인트 소요시간도 4~58ms로 영향 없음.
+   - CLOSE_WAIT 소켓(2~5개, 증가 없이 안정)은 수정 전후 동일하게 존재 — 중복과 인과관계가 없었음을 재확인. JDBC sink는 여전히 구조적으로 at-least-once이므로 `ReplacingMergeTree`+`FINAL` 백스톱은 유지한다. 상세 조사 기록: `_workspace/06_jdbc_conn_fix.md`.
 
 ## 8. 포트/네트워크 설계 근거
 
@@ -96,7 +101,8 @@ realtime-txn-pipeline/
 │   ├── build.gradle.kts
 │   └── src/main/java/com/jm/txnpipeline/flink/
 │       (TransactionProcessor, BalanceAndAnomalyFunction, WindowStatsFunction,
-│        DebeziumEventParser, TransactionEvent/BalanceUpdate/WindowedStats/AnomalyFlag)
+│        DebeziumEventParser, ReconnectSafeBatchStatementExecutor,
+│        TransactionEvent/BalanceUpdate/WindowedStats/AnomalyFlag)
 └── generator/
     ├── requirements.txt         (psycopg2-binary)
     ├── generate_transactions.py (합성 거래 생성기)
@@ -114,9 +120,15 @@ realtime-txn-pipeline/
 7. 이상거래 비율 실측치(large_amount 4.05%, high_velocity 2.34%)가 이론값(각각 ≈5.0%, ≈2.06%, 후자는 실제 생성기 분포 몬테카를로 시뮬레이션으로 산출)과 Wilson 95% 신뢰구간 내에서 통계적으로 부합함을 확인 (Phase 2/3).
 8. `anomaly_flags`/`windowed_txn_stats`에 `FINAL` 적용 시 중복 0건임을 확인 — §7-5 dedup 백스톱이 실제로 작동함을 검증 (Phase 2).
 9. Grafana 대시보드(datasource + 7패널) provisioning 후 API로 정상 로드/쿼리 실행 확인 (Phase 3).
+10. `ReconnectSafeBatchStatementExecutor` 적용 후 약 4시간 48분 연속 가동에서 신규 적재분(`anomaly_flags` 115행, `windowed_txn_stats` 109행)의 중복 키 0건 확인 (§7-5, 2026-09-13).
 
 ## 11. 다음 단계
 
 - **Phase 2, 3 완료**: Flink job(잔액/윈도우 집계/이상거래), ClickHouse 스키마, Grafana 대시보드, 데이터 검증까지 엔드투엔드로 가동 및 검증 완료 (2026-09-06).
-- **남은 과제**: §7-5의 ClickHouse HTTP 커넥션 재사용 레이스 근본 원인이 완전히는 안 잡혔음 — 현재는 스키마 dedup 백스톱으로 기능상 문제 없으나, 성능/정리 관점에서 추가 조사 여지가 있음.
+- **§7-5 중복 삽입 근본 원인 해결 (2026-09-13)**: jdbc-v2 드라이버 버그 우회 완료, dedup 백스톱은 방어선으로 유지.
+- **남은 과제**:
+  - clickhouse-java 업스트림에 `PreparedStatementImpl` 배치 미초기화 버그 보고 (최신 버전에서 이미 수정됐는지 먼저 확인)
+  - Kafka 파티션 수 실제 반영 (`KAFKA_CFG_*`는 `apache/kafka` 이미지에서 무시되어 현재 1파티션)
+  - CDC `op=u/d`(거래 정정·취소) 처리 — 현재는 `op=c`만 처리
+  - 테스트 코드(Flink operator test harness, Testcontainers E2E)와 장애 주입 후 정합성 자동 검증
 - **Phase 4 (스트레치)**: MinIO+Iceberg 데이터레이크 싱크 추가

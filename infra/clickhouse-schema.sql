@@ -26,14 +26,15 @@ ORDER BY account_id;
 -- Grafana time range ($__timeFilter(window_start)).
 -- ReplacingMergeTree() (no version column) on (account_id, window_start): the JDBC sink is
 -- structurally at-least-once (see TransactionProcessor.java jdbcConnectionOptions /
--- withMaxRetries(3)), and a live HTTP keep-alive connection-reuse race has already produced
--- real duplicate INSERTs of the exact same (account_id, window_start) row in production —
+-- withMaxRetries(3)), and a jdbc-v2 0.8.6 driver bug (PreparedStatement batch never cleared
+-- after executeBatch(), so every flush resent all earlier rows) has already produced real
+-- duplicate INSERTs of the exact same (account_id, window_start) row in production —
 -- confirmed identical txn_count/txn_amount across the duplicates, never divergent values. A
 -- version column is unnecessary because "keep whichever duplicate merges last" is safe when
 -- duplicates are guaranteed byte-identical; a plain WindowStatsFunction re-emit for the same
--- window always produces the same aggregate. Root cause of the race is fixed at the Flink
--- level (http_keep_alive=false), but this is the schema-level backstop for any future
--- at-least-once retry.
+-- window always produces the same aggregate. That driver bug is worked around at the Flink
+-- level (ReconnectSafeBatchStatementExecutor), but this is the schema-level backstop for any
+-- future at-least-once retry.
 -- EVERY read must dedupe: merges are async, so duplicate rows can exist between merges.
 -- Use FINAL, e.g.:
 --   SELECT window_start, sum(txn_amount) FROM windowed_txn_stats FINAL WHERE $__timeFilter(window_start) GROUP BY window_start
@@ -50,7 +51,7 @@ ORDER BY (account_id, window_start);
 -- Anomaly flags. Query pattern: recent-alerts list (all accounts) and per-account alert
 -- history — the latter needs account_id first in the sort key or it's a full scan.
 -- ReplacingMergeTree() (no version column) on (account_id, reason, detected_at) — same
--- rationale as windowed_txn_stats above: the same connection-reuse race produced real
+-- rationale as windowed_txn_stats above: the same driver batch-not-cleared bug produced real
 -- duplicate INSERTs here too, and (account_id, reason, detected_at) IS the entire row (no
 -- other columns exist to diverge), so any duplicate is by construction identical. No version
 -- column needed.
