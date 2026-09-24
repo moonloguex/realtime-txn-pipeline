@@ -1,19 +1,28 @@
 {
   "uid": "txn-pipeline-overview",
   "title": "실시간 뱅킹 파이프라인 개요",
-  "tags": ["txn-pipeline", "clickhouse"],
+  "tags": [
+    "txn-pipeline",
+    "clickhouse"
+  ],
   "timezone": "browser",
   "schemaVersion": 39,
   "version": 1,
   "refresh": "10s",
-  "time": { "from": "now-1h", "to": "now" },
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
   "templating": {
     "list": [
       {
         "name": "account_id",
         "label": "Account",
         "type": "query",
-        "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse-ds" },
+        "datasource": {
+          "type": "grafana-clickhouse-datasource",
+          "uid": "clickhouse-ds"
+        },
         "definition": "SELECT DISTINCT toString(account_id) FROM balance_snapshot ORDER BY 1",
         "query": "SELECT DISTINCT toString(account_id) FROM balance_snapshot ORDER BY 1",
         "refresh": 2,
@@ -29,53 +38,112 @@
   "panels": [
     {
       "id": 1,
-      "type": "timeseries",
-      "title": "계좌별 잔액 추이 (balance_snapshot, FINAL)",
-      "description": "ReplacingMergeTree는 계좌당 최신 행만 보존하므로 FINAL로 중복(병합 전) 행을 제거한다. 선택한 시간 범위 안에 갱신이 없었던 계좌는 표시되지 않는다 — 이는 스냅샷 테이블의 구조적 한계이며 대시보드 쿼리 문제가 아니다.",
-      "gridPos": { "x": 0, "y": 0, "w": 24, "h": 8 },
-      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse-ds" },
+      "type": "bargauge",
+      "title": "계좌별 현재 잔액 (balance_snapshot, FINAL)",
+      "description": "balance_snapshot은 계좌당 최신 잔액만 유지(ReplacingMergeTree(updated_at), ORDER BY account_id)하므로 시계열 이력이 아닌 현재 잔액을 표시한다. 시간 필터와 무관하게 전체 계좌의 최신값.",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 8
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse-ds"
+      },
       "fieldConfig": {
         "defaults": {
           "unit": "currencyUSD",
-          "custom": { "drawStyle": "line", "pointSize": 5, "showPoints": "always", "spanNulls": false }
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          }
         },
         "overrides": []
       },
       "targets": [
         {
           "refId": "A",
-          "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse-ds" },
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse-ds"
+          },
           "queryType": "sql",
-          "format": 2,
-          "rawSql": "SELECT\n    updated_at AS time,\n    concat('account_', toString(account_id)) AS metric,\n    balance\nFROM balance_snapshot FINAL\nWHERE $__timeFilter(updated_at)\n  AND toString(account_id) IN ($account_id)\nORDER BY updated_at",
-          "meta": { "builderOptions": { "fields": [], "limit": 1000, "mode": "list" } }
+          "format": 1,
+          "rawSql": "SELECT\n    concat('account_', toString(account_id)) AS account,\n    balance\nFROM balance_snapshot FINAL\nWHERE toString(account_id) IN ($account_id)\nORDER BY account_id",
+          "meta": {
+            "builderOptions": {
+              "fields": [],
+              "limit": 1000,
+              "mode": "list"
+            }
+          }
         }
-      ]
+      ],
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "basic",
+        "showUnfilled": true,
+        "reduceOptions": {
+          "values": true,
+          "calcs": [],
+          "fields": "/^balance$/"
+        }
+      }
     },
     {
       "id": 2,
       "type": "timeseries",
       "title": "1분 윈도우 거래량 / 거래액 (windowed_txn_stats)",
       "description": "windowed_txn_stats는 ReplacingMergeTree()(버전 컬럼 없음)이므로 FINAL 필수 — argMax는 버전 컬럼이 없어 사용 불가.",
-      "gridPos": { "x": 0, "y": 8, "w": 24, "h": 8 },
-      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse-ds" },
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 24,
+        "h": 8
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse-ds"
+      },
       "fieldConfig": {
         "defaults": {
-          "custom": { "drawStyle": "bars", "fillOpacity": 40 }
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 40
+          }
         },
         "overrides": [
           {
-            "matcher": { "id": "byName", "options": "txn_amount" },
+            "matcher": {
+              "id": "byName",
+              "options": "txn_amount"
+            },
             "properties": [
-              { "id": "unit", "value": "currencyUSD" },
-              { "id": "custom.axisPlacement", "value": "right" },
-              { "id": "custom.drawStyle", "value": "line" }
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              },
+              {
+                "id": "custom.axisPlacement",
+                "value": "right"
+              },
+              {
+                "id": "custom.drawStyle",
+                "value": "line"
+              }
             ]
           },
           {
-            "matcher": { "id": "byName", "options": "txn_count" },
+            "matcher": {
+              "id": "byName",
+              "options": "txn_count"
+            },
             "properties": [
-              { "id": "unit", "value": "short" }
+              {
+                "id": "unit",
+                "value": "short"
+              }
             ]
           }
         ]
@@ -83,19 +151,37 @@
       "targets": [
         {
           "refId": "A",
-          "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse-ds" },
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse-ds"
+          },
           "queryType": "sql",
           "format": 2,
           "rawSql": "SELECT\n    window_start AS time,\n    sum(txn_count) AS txn_count\nFROM windowed_txn_stats FINAL\nWHERE $__timeFilter(window_start)\n  AND toString(account_id) IN ($account_id)\nGROUP BY window_start\nORDER BY window_start",
-          "meta": { "builderOptions": { "fields": [], "limit": 1000, "mode": "list" } }
+          "meta": {
+            "builderOptions": {
+              "fields": [],
+              "limit": 1000,
+              "mode": "list"
+            }
+          }
         },
         {
           "refId": "B",
-          "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse-ds" },
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse-ds"
+          },
           "queryType": "sql",
           "format": 2,
           "rawSql": "SELECT\n    window_start AS time,\n    sum(txn_amount) AS txn_amount\nFROM windowed_txn_stats FINAL\nWHERE $__timeFilter(window_start)\n  AND toString(account_id) IN ($account_id)\nGROUP BY window_start\nORDER BY window_start",
-          "meta": { "builderOptions": { "fields": [], "limit": 1000, "mode": "list" } }
+          "meta": {
+            "builderOptions": {
+              "fields": [],
+              "limit": 1000,
+              "mode": "list"
+            }
+          }
         }
       ]
     },
@@ -104,13 +190,24 @@
       "type": "table",
       "title": "이상거래 알림 (anomaly_flags, 최신순)",
       "description": "anomaly_flags는 ReplacingMergeTree()(버전 컬럼 없음)이므로 FINAL 필수 — 안 그러면 JDBC sink at-least-once 재시도로 인한 중복 INSERT가 그대로 노출되어 건수가 부풀려 보인다.",
-      "gridPos": { "x": 0, "y": 16, "w": 16, "h": 9 },
-      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse-ds" },
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 16,
+        "h": 9
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse-ds"
+      },
       "fieldConfig": {
-        "defaults": { "custom": { "cellOptions": { "type": "color-background" } } },
+        "defaults": {},
         "overrides": [
           {
-            "matcher": { "id": "byName", "options": "reason" },
+            "matcher": {
+              "id": "byName",
+              "options": "reason"
+            },
             "properties": [
               {
                 "id": "mappings",
@@ -118,29 +215,59 @@
                   {
                     "type": "value",
                     "options": {
-                      "large_amount": { "text": "large_amount", "color": "semi-dark-red", "index": 0 },
-                      "high_velocity": { "text": "high_velocity", "color": "semi-dark-blue", "index": 1 }
+                      "large_amount": {
+                        "text": "large_amount",
+                        "color": "semi-dark-red",
+                        "index": 0
+                      },
+                      "high_velocity": {
+                        "text": "high_velocity",
+                        "color": "semi-dark-blue",
+                        "index": 1
+                      }
                     }
                   }
                 ]
               },
-              { "id": "custom.cellOptions", "value": { "type": "color-background" } }
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              }
             ]
           },
           {
-            "matcher": { "id": "byName", "options": "detected_at" },
-            "properties": [{ "id": "custom.width", "value": 200 }]
+            "matcher": {
+              "id": "byName",
+              "options": "detected_at"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 200
+              }
+            ]
           }
         ]
       },
       "targets": [
         {
           "refId": "A",
-          "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse-ds" },
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse-ds"
+          },
           "queryType": "sql",
           "format": 1,
           "rawSql": "SELECT\n    detected_at,\n    toString(account_id) AS account_id,\n    reason\nFROM anomaly_flags FINAL\nWHERE $__timeFilter(detected_at)\n  AND toString(account_id) IN ($account_id)\nORDER BY detected_at DESC\nLIMIT 100",
-          "meta": { "builderOptions": { "fields": [], "limit": 100, "mode": "list" } }
+          "meta": {
+            "builderOptions": {
+              "fields": [],
+              "limit": 100,
+              "mode": "list"
+            }
+          }
         }
       ]
     },
@@ -148,16 +275,30 @@
       "id": 4,
       "type": "piechart",
       "title": "이상거래 사유별 분포",
-      "gridPos": { "x": 16, "y": 16, "w": 8, "h": 9 },
-      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse-ds" },
+      "gridPos": {
+        "x": 16,
+        "y": 16,
+        "w": 8,
+        "h": 9
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse-ds"
+      },
       "fieldConfig": {
         "defaults": {
           "mappings": [
             {
               "type": "value",
               "options": {
-                "large_amount": { "color": "semi-dark-red", "index": 0 },
-                "high_velocity": { "color": "semi-dark-blue", "index": 1 }
+                "large_amount": {
+                  "color": "semi-dark-red",
+                  "index": 0
+                },
+                "high_velocity": {
+                  "color": "semi-dark-blue",
+                  "index": 1
+                }
               }
             }
           ]
@@ -165,17 +306,37 @@
         "overrides": []
       },
       "options": {
-        "displayLabels": ["percent", "value"],
-        "legend": { "displayMode": "list", "placement": "bottom" }
+        "displayLabels": [
+          "percent",
+          "value"
+        ],
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "reduceOptions": {
+          "values": true,
+          "calcs": [],
+          "fields": "/^cnt$/"
+        }
       },
       "targets": [
         {
           "refId": "A",
-          "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse-ds" },
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse-ds"
+          },
           "queryType": "sql",
           "format": 1,
           "rawSql": "SELECT\n    reason,\n    count() AS cnt\nFROM anomaly_flags FINAL\nWHERE $__timeFilter(detected_at)\n  AND toString(account_id) IN ($account_id)\nGROUP BY reason\nORDER BY cnt DESC",
-          "meta": { "builderOptions": { "fields": [], "limit": 100, "mode": "list" } }
+          "meta": {
+            "builderOptions": {
+              "fields": [],
+              "limit": 100,
+              "mode": "list"
+            }
+          }
         }
       ]
     },
@@ -184,8 +345,16 @@
       "type": "gauge",
       "title": "이상거래 비율 (선택 기간)",
       "description": "anomaly_flags 건수 / windowed_txn_stats 총 거래건수 * 100. 설계상 large_amount는 전체 거래의 약 5%에서 발생하도록 튜닝됨(BalanceAndAnomalyFunction.java 주석 참고) — high_velocity가 더해지므로 정상 범위는 대략 5~15% 선.",
-      "gridPos": { "x": 0, "y": 25, "w": 8, "h": 7 },
-      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse-ds" },
+      "gridPos": {
+        "x": 0,
+        "y": 25,
+        "w": 8,
+        "h": 7
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse-ds"
+      },
       "fieldConfig": {
         "defaults": {
           "unit": "percent",
@@ -194,9 +363,18 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "yellow", "value": 15 },
-              { "color": "red", "value": 30 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 15
+              },
+              {
+                "color": "red",
+                "value": 30
+              }
             ]
           }
         },
@@ -205,11 +383,20 @@
       "targets": [
         {
           "refId": "A",
-          "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse-ds" },
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse-ds"
+          },
           "queryType": "sql",
           "format": 1,
           "rawSql": "SELECT\n    (SELECT count() FROM anomaly_flags FINAL WHERE $__timeFilter(detected_at) AND toString(account_id) IN ($account_id)) * 100.0\n    / greatest((SELECT sum(txn_count) FROM windowed_txn_stats FINAL WHERE $__timeFilter(window_start) AND toString(account_id) IN ($account_id)), 1) AS anomaly_pct",
-          "meta": { "builderOptions": { "fields": [], "limit": 1, "mode": "list" } }
+          "meta": {
+            "builderOptions": {
+              "fields": [],
+              "limit": 1,
+              "mode": "list"
+            }
+          }
         }
       ]
     },
@@ -217,24 +404,51 @@
       "id": 6,
       "type": "stat",
       "title": "총 이상거래 건수 (선택 기간)",
-      "gridPos": { "x": 8, "y": 25, "w": 8, "h": 7 },
-      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse-ds" },
+      "gridPos": {
+        "x": 8,
+        "y": 25,
+        "w": 8,
+        "h": 7
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse-ds"
+      },
       "fieldConfig": {
         "defaults": {
           "unit": "short",
-          "color": { "mode": "thresholds" },
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "semi-dark-blue", "value": null }] }
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "semi-dark-blue",
+                "value": null
+              }
+            ]
+          }
         },
         "overrides": []
       },
       "targets": [
         {
           "refId": "A",
-          "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse-ds" },
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse-ds"
+          },
           "queryType": "sql",
           "format": 1,
           "rawSql": "SELECT count() AS anomaly_count FROM anomaly_flags FINAL WHERE $__timeFilter(detected_at) AND toString(account_id) IN ($account_id)",
-          "meta": { "builderOptions": { "fields": [], "limit": 1, "mode": "list" } }
+          "meta": {
+            "builderOptions": {
+              "fields": [],
+              "limit": 1,
+              "mode": "list"
+            }
+          }
         }
       ]
     },
@@ -242,24 +456,51 @@
       "id": 7,
       "type": "stat",
       "title": "전체 거래 건수 (선택 기간)",
-      "gridPos": { "x": 16, "y": 25, "w": 8, "h": 7 },
-      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse-ds" },
+      "gridPos": {
+        "x": 16,
+        "y": 25,
+        "w": 8,
+        "h": 7
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse-ds"
+      },
       "fieldConfig": {
         "defaults": {
           "unit": "short",
-          "color": { "mode": "thresholds" },
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "semi-dark-green", "value": null }] }
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "semi-dark-green",
+                "value": null
+              }
+            ]
+          }
         },
         "overrides": []
       },
       "targets": [
         {
           "refId": "A",
-          "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse-ds" },
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse-ds"
+          },
           "queryType": "sql",
           "format": 1,
           "rawSql": "SELECT sum(txn_count) AS total_txn FROM windowed_txn_stats FINAL WHERE $__timeFilter(window_start) AND toString(account_id) IN ($account_id)",
-          "meta": { "builderOptions": { "fields": [], "limit": 1, "mode": "list" } }
+          "meta": {
+            "builderOptions": {
+              "fields": [],
+              "limit": 1,
+              "mode": "list"
+            }
+          }
         }
       ]
     }

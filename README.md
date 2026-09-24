@@ -16,7 +16,8 @@ flowchart LR
     CH --> GF[Grafana 대시보드]
 ```
 
-<!-- TODO: Grafana 대시보드 스크린샷 (docs/images/dashboard.png) -->
+![Grafana 대시보드 — 계좌별 현재 잔액, 1분 윈도우 거래량/거래액](docs/images/dashboard-top.jpg)
+![Grafana 대시보드 — 이상거래 알림, 사유별 분포, 이상거래 비율](docs/images/dashboard-anomalies.jpg)
 
 ## 핵심 성과
 
