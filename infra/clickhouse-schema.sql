@@ -32,9 +32,9 @@ ORDER BY account_id;
 -- confirmed identical txn_count/txn_amount across the duplicates, never divergent values. A
 -- version column is unnecessary because "keep whichever duplicate merges last" is safe when
 -- duplicates are guaranteed byte-identical; a plain WindowStatsFunction re-emit for the same
--- window always produces the same aggregate. That driver bug is worked around at the Flink
--- level (ReconnectSafeBatchStatementExecutor), but this is the schema-level backstop for any
--- future at-least-once retry.
+-- window always produces the same aggregate. That driver bug is fixed upstream
+-- (clickhouse-java#2548, 0.9.2+; the job now uses 0.9.8), but this is the schema-level
+-- backstop for any future at-least-once retry.
 -- EVERY read must dedupe: merges are async, so duplicate rows can exist between merges.
 -- Use FINAL, e.g.:
 --   SELECT window_start, sum(txn_amount) FROM windowed_txn_stats FINAL WHERE $__timeFilter(window_start) GROUP BY window_start

@@ -69,6 +69,7 @@ CDC 원본 이벤트가 담기는 Kafka 토픽(`cdc.public.transactions`)의 리
    - **가설 반증**: 재조사 결과 `com.clickhouse.jdbc.ClickHouseDriver`는 URL에 `clickhouse.jdbc.v1=true`가 없으면 V2 드라이버로 위임하는 프록시였고, `http_keep_alive`는 V2가 참조조차 하지 않는 V1 전용 옵션이었다. 라이브 재현에서도 소켓 수는 고정(9개)인데 중복은 계속 발생했고, Flink의 재시도 로그(`JDBC executeBatch error`)는 0건이었다 — 커넥션 재사용·재시도 가설과 정면으로 모순.
    - **진짜 원인**: `com.clickhouse:jdbc-v2:0.8.6`의 `PreparedStatementImpl`이 리터럴-VALUES INSERT 전용 fast-path에서 내부 `batchValues` 리스트를 `executeBatch()` 이후에도 비우지 않는 드라이버 버그(`clearBatch()`도 오버라이드 안 함). Flink의 `SimpleBatchStatementExecutor`는 sink 수명 내내 같은 `PreparedStatement`를 재사용하므로, 매 flush마다 그 statement에 추가된 **모든 과거 행이 재전송**됐다(오래된 행일수록 중복 배율 증가).
    - **수정**: `ReconnectSafeBatchStatementExecutor`를 새로 만들어 `executeBatch()` 성공 직후 `PreparedStatement`를 닫고 재생성하도록 하고, 세 sink 모두 이를 쓰도록 `TransactionProcessor`에서 `GenericJdbcSinkFunction`+`JdbcOutputFormat`을 직접 조립했다. 약 4시간 48분 연속 가동(체크포인트 86회, 예외 0건) 동안 신규 `anomaly_flags` 115행 / `windowed_txn_stats` 109행 중 **중복 키 0건**(수정 전에는 8분 만에 각각 19개/30개 키 중복). 체크포인트 소요시간도 4~58ms로 영향 없음.
+   - **업스트림 확인 및 우회 코드 제거 (2026-09-24)**: 이 버그는 0.8.6 회귀로 이미 [clickhouse-java#2548](https://github.com/ClickHouse/clickhouse-java/issues/2548)에 보고되어 v0.9.2(PR #2549, `executeBatch()` 후 `clearBatch()` 호출)에서 수정됐음을 확인 — 독립 진단이 메인테이너 결론과 일치. `clickhouse-jdbc:0.9.8`(0.9.x부터 `:http` classifier 없음)로 올리고 `ReconnectSafeBatchStatementExecutor`를 삭제해 표준 `JdbcSink.sink`로 복귀했다. 15분 가동(체크포인트 100회, 예외 0건)에서 `FINAL` 없는 원본 테이블 기준 신규 `anomaly_flags` 62행 / `windowed_txn_stats` 75행 중 중복 키 0건, 닫힌 1분 윈도우 70개(거래 672건)의 건수·금액이 Postgres 원본과 전부 일치.
    - CLOSE_WAIT 소켓(2~5개, 증가 없이 안정)은 수정 전후 동일하게 존재 — 중복과 인과관계가 없었음을 재확인. JDBC sink는 여전히 구조적으로 at-least-once이므로 `ReplacingMergeTree`+`FINAL` 백스톱은 유지한다. 상세 조사 기록: `_workspace/06_jdbc_conn_fix.md`.
 
 ## 8. 포트/네트워크 설계 근거
@@ -101,7 +102,7 @@ realtime-txn-pipeline/
 │   ├── build.gradle.kts
 │   └── src/main/java/com/jm/txnpipeline/flink/
 │       (TransactionProcessor, BalanceAndAnomalyFunction, WindowStatsFunction,
-│        DebeziumEventParser, ReconnectSafeBatchStatementExecutor,
+│        DebeziumEventParser,
 │        TransactionEvent/BalanceUpdate/WindowedStats/AnomalyFlag)
 └── generator/
     ├── requirements.txt         (psycopg2-binary)
@@ -121,13 +122,13 @@ realtime-txn-pipeline/
 8. `anomaly_flags`/`windowed_txn_stats`에 `FINAL` 적용 시 중복 0건임을 확인 — §7-5 dedup 백스톱이 실제로 작동함을 검증 (Phase 2).
 9. Grafana 대시보드(datasource + 7패널) provisioning 후 API로 정상 로드/쿼리 실행 확인 (Phase 3).
 10. `ReconnectSafeBatchStatementExecutor` 적용 후 약 4시간 48분 연속 가동에서 신규 적재분(`anomaly_flags` 115행, `windowed_txn_stats` 109행)의 중복 키 0건 확인 (§7-5, 2026-09-13).
+11. clickhouse-jdbc 0.9.8 업그레이드·우회 코드 제거 후 15분 가동에서 원본 테이블 중복 키 0건, 1분 윈도우 70개 Postgres 대조 전부 일치 (§7-5, 2026-09-24).
 
 ## 11. 다음 단계
 
 - **Phase 2, 3 완료**: Flink job(잔액/윈도우 집계/이상거래), ClickHouse 스키마, Grafana 대시보드, 데이터 검증까지 엔드투엔드로 가동 및 검증 완료 (2026-09-06).
 - **§7-5 중복 삽입 근본 원인 해결 (2026-09-13)**: jdbc-v2 드라이버 버그 우회 완료, dedup 백스톱은 방어선으로 유지.
 - **남은 과제**:
-  - clickhouse-java 0.9.2+로 업그레이드 후 `ReconnectSafeBatchStatementExecutor` 제거 여부 검증 — 이 버그는 업스트림 [#2548](https://github.com/ClickHouse/clickhouse-java/issues/2548)로 이미 보고되어 v0.9.2(PR #2549)에서 수정됨을 2026-09-24 확인
   - Kafka 파티션 수 실제 반영 (`KAFKA_CFG_*`는 `apache/kafka` 이미지에서 무시되어 현재 1파티션)
   - CDC `op=u/d`(거래 정정·취소) 처리 — 현재는 `op=c`만 처리
   - 테스트 코드(Flink operator test harness, Testcontainers E2E)와 장애 주입 후 정합성 자동 검증

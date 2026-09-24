@@ -29,7 +29,7 @@ dependencies {
         exclude(group = "org.lz4", module = "lz4-java")
     }
     implementation("org.apache.flink:flink-connector-jdbc:3.3.0-1.20")
-    implementation("com.clickhouse:clickhouse-jdbc:0.8.6:http") {
+    implementation("com.clickhouse:clickhouse-jdbc:0.9.8") {
         exclude(group = "org.lz4", module = "lz4-java")
     }
     implementation("com.fasterxml.jackson.core:jackson-databind:2.17.1")

@@ -4,10 +4,8 @@ import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.common.serialization.SimpleStringSchema;
 import org.apache.flink.connector.jdbc.JdbcConnectionOptions;
 import org.apache.flink.connector.jdbc.JdbcExecutionOptions;
+import org.apache.flink.connector.jdbc.JdbcSink;
 import org.apache.flink.connector.jdbc.JdbcStatementBuilder;
-import org.apache.flink.connector.jdbc.datasource.connections.SimpleJdbcConnectionProvider;
-import org.apache.flink.connector.jdbc.internal.GenericJdbcSinkFunction;
-import org.apache.flink.connector.jdbc.internal.JdbcOutputFormat;
 import org.apache.flink.connector.kafka.source.KafkaSource;
 import org.apache.flink.connector.kafka.source.enumerator.initializer.OffsetsInitializer;
 import org.apache.flink.streaming.api.datastream.DataStream;
@@ -35,13 +33,14 @@ public class TransactionProcessor {
     private static final String KAFKA_BOOTSTRAP_SERVERS = "localhost:19092";
     private static final String KAFKA_TOPIC = "cdc.public.transactions";
     // `com.clickhouse.jdbc.ClickHouseDriver` is a proxy that defaults to the V2 driver/client
-    // (the jdbc-v2 + client-v2 artifacts pulled in transitively by clickhouse-jdbc:0.8.6)
+    // (the jdbc-v2 + client-v2 artifacts pulled in transitively by clickhouse-jdbc)
     // unless the URL opts into V1 (`clickhouse.jdbc.v1=true`) - this job never has, so it has
     // always run on V2, never on the deprecated V1 code path. http_keep_alive_timeout (ms) is
     // V2's own connection-hygiene knob (Client.Builder#setKeepAliveTimeout): it makes the
     // client proactively drop a connection before ClickHouse's server-side
-    // keep_alive_timeout=10s can close it first. Kept as cheap hardening, but it is NOT what
-    // fixes the real duplicate-row bug below - see ReconnectSafeBatchStatementExecutor.
+    // keep_alive_timeout=10s can close it first. Kept as cheap hardening; it was NOT the cause
+    // of the old duplicate-row bug (jdbc-v2 0.8.6 never cleared its batch after executeBatch(),
+    // clickhouse-java#2548, fixed in 0.9.2 - see ARCHITECTURE_DECISIONS.md §7-5).
     private static final String CLICKHOUSE_URL = "jdbc:clickhouse://localhost:8123/default?http_keep_alive_timeout=3000";
     private static final String CLICKHOUSE_DRIVER = "com.clickhouse.jdbc.ClickHouseDriver";
 
@@ -121,17 +120,8 @@ public class TransactionProcessor {
         env.execute("realtime-txn-pipeline");
     }
 
-    // Equivalent to JdbcSink.sink(sql, statementBuilder, jdbcExecutionOptions(),
-    // jdbcConnectionOptions()), except it plugs in ReconnectSafeBatchStatementExecutor instead
-    // of JdbcBatchStatementExecutor.simple(...) - see that class for why the substitution is
-    // necessary (a confirmed batch-not-cleared bug in the clickhouse-jdbc-v2 0.8.6 driver that
-    // otherwise resends every row ever added to a sink's PreparedStatement on every flush).
     private static <T> SinkFunction<T> jdbcSink(String sql, JdbcStatementBuilder<T> statementBuilder) {
-        return new GenericJdbcSinkFunction<>(
-                new JdbcOutputFormat<>(
-                        new SimpleJdbcConnectionProvider(jdbcConnectionOptions()),
-                        jdbcExecutionOptions(),
-                        () -> new ReconnectSafeBatchStatementExecutor<>(sql, statementBuilder)));
+        return JdbcSink.sink(sql, statementBuilder, jdbcExecutionOptions(), jdbcConnectionOptions());
     }
 
     private static JdbcExecutionOptions jdbcExecutionOptions() {
