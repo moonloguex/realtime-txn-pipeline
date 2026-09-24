@@ -47,9 +47,14 @@ public class TransactionProcessor {
     public static void main(String[] args) throws Exception {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.enableCheckpointing(10_000);
+        buildPipeline(env, KAFKA_BOOTSTRAP_SERVERS, CLICKHOUSE_URL);
+        env.execute("realtime-txn-pipeline");
+    }
 
+    // Split out of main() so the E2E test can point the same topology at Testcontainers.
+    static void buildPipeline(StreamExecutionEnvironment env, String kafkaBootstrapServers, String clickhouseUrl) {
         KafkaSource<String> source = KafkaSource.<String>builder()
-                .setBootstrapServers(KAFKA_BOOTSTRAP_SERVERS)
+                .setBootstrapServers(kafkaBootstrapServers)
                 .setTopics(KAFKA_TOPIC)
                 .setGroupId("txn-flink-processor")
                 // committedOffsets(EARLIEST), not earliest(): earliest() always replays the whole
@@ -89,7 +94,7 @@ public class TransactionProcessor {
                 .process(new WindowStatsFunction())
                 .name("windowed-stats");
 
-        balances.addSink(jdbcSink(
+        balances.addSink(jdbcSink(clickhouseUrl,
                 "INSERT INTO balance_snapshot (account_id, balance, updated_at) VALUES (?, ?, ?)",
                 (statement, b) -> {
                     statement.setInt(1, b.accountId);
@@ -98,7 +103,7 @@ public class TransactionProcessor {
                 }
         )).name("balance-snapshot-sink");
 
-        windowedStats.addSink(jdbcSink(
+        windowedStats.addSink(jdbcSink(clickhouseUrl,
                 "INSERT INTO windowed_txn_stats (window_start, account_id, txn_count, txn_amount) VALUES (?, ?, ?, ?)",
                 (statement, s) -> {
                     statement.setTimestamp(1, Timestamp.from(s.windowStart));
@@ -108,7 +113,7 @@ public class TransactionProcessor {
                 }
         )).name("windowed-stats-sink");
 
-        anomalies.addSink(jdbcSink(
+        anomalies.addSink(jdbcSink(clickhouseUrl,
                 "INSERT INTO anomaly_flags (account_id, reason, detected_at) VALUES (?, ?, ?)",
                 (statement, a) -> {
                     statement.setInt(1, a.accountId);
@@ -116,12 +121,10 @@ public class TransactionProcessor {
                     statement.setTimestamp(3, Timestamp.from(a.detectedAt));
                 }
         )).name("anomaly-flags-sink");
-
-        env.execute("realtime-txn-pipeline");
     }
 
-    private static <T> SinkFunction<T> jdbcSink(String sql, JdbcStatementBuilder<T> statementBuilder) {
-        return JdbcSink.sink(sql, statementBuilder, jdbcExecutionOptions(), jdbcConnectionOptions());
+    private static <T> SinkFunction<T> jdbcSink(String url, String sql, JdbcStatementBuilder<T> statementBuilder) {
+        return JdbcSink.sink(sql, statementBuilder, jdbcExecutionOptions(), jdbcConnectionOptions(url));
     }
 
     private static JdbcExecutionOptions jdbcExecutionOptions() {
@@ -132,9 +135,9 @@ public class TransactionProcessor {
                 .build();
     }
 
-    private static JdbcConnectionOptions jdbcConnectionOptions() {
+    private static JdbcConnectionOptions jdbcConnectionOptions(String url) {
         return new JdbcConnectionOptions.JdbcConnectionOptionsBuilder()
-                .withUrl(CLICKHOUSE_URL)
+                .withUrl(url)
                 .withDriverName(CLICKHOUSE_DRIVER)
                 .withUsername("default")
                 .withPassword("")

@@ -123,6 +123,7 @@ realtime-txn-pipeline/
 9. Grafana 대시보드(datasource + 7패널) provisioning 후 API로 정상 로드/쿼리 실행 확인 (Phase 3).
 10. `ReconnectSafeBatchStatementExecutor` 적용 후 약 4시간 48분 연속 가동에서 신규 적재분(`anomaly_flags` 115행, `windowed_txn_stats` 109행)의 중복 키 0건 확인 (§7-5, 2026-09-13).
 11. clickhouse-jdbc 0.9.8 업그레이드·우회 코드 제거 후 15분 가동에서 원본 테이블 중복 키 0건, 1분 윈도우 70개 Postgres 대조 전부 일치 (§7-5, 2026-09-24).
+12. 위 수동 대조를 자동화: `gradle e2eTest`가 Postgres→Debezium→Kafka→Flink→ClickHouse를 Testcontainers로 기동하고 고정 시드 거래 305건 투입 후 1분 윈도우 30개·잔액 5개·`large_amount` 17건·`high_velocity` 11건(룰을 SQL 윈도우 함수로 독립 재계산)을 Postgres와 전부 일치 확인, 원본 테이블 중복 0건. 단위 테스트 9개(체크포인트 복원 후 재처리 무중복, 룰 경계값 포함). 임계치 변경 시 E2E가 실패함을 확인 (2026-09-24).
 
 ## 11. 다음 단계
 
@@ -131,5 +132,5 @@ realtime-txn-pipeline/
 - **남은 과제**:
   - Kafka 파티션 수 실제 반영 (`KAFKA_CFG_*`는 `apache/kafka` 이미지에서 무시되어 현재 1파티션)
   - CDC `op=u/d`(거래 정정·취소) 처리 — 현재는 `op=c`만 처리
-  - 테스트 코드(Flink operator test harness, Testcontainers E2E)와 장애 주입 후 정합성 자동 검증
+  - 장애 주입(Flink/Connect/ClickHouse 강제 종료) 후 정합성 자동 검증 — `PipelineReconciliationE2ETest`의 대조 로직 재사용
 - **Phase 4 (스트레치)**: MinIO+Iceberg 데이터레이크 싱크 추가

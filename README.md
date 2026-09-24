@@ -108,10 +108,30 @@ pip install -r requirements.txt && python generate_transactions.py
 | ClickHouse HTTP | http://localhost:8123 |
 | Postgres | localhost:5433 |
 
+## 테스트
+
+```bash
+cd flink-job
+gradle test      # 단위 테스트 (Docker 불필요)
+gradle e2eTest   # 컨테이너 기반 E2E 정합성 테스트 (Docker 필요, 약 1.5분)
+```
+
+- **단위 테스트** (Flink operator test harness, MiniCluster)
+  - 잔액: 계좌별로 분리되고 `BigDecimal`로 오차 없이 누적되는지 확인
+  - 체크포인트: 스냅샷 → 장애 → 복원 → 재처리를 거쳐도 이중 반영이 없는지 확인
+  - 이상거래 룰 경계값: `47,500`은 탐지하지 않고 `47,500.01`부터 탐지, 5초 창은 경계 포함
+  - 윈도우: `59,999ms`/`60,000ms` 경계, 5초 이내로 늦게 도착한 이벤트도 포함
+  - CDC 파싱: `op=r/u/d` 이벤트는 무시
+- **E2E 정합성 테스트**: Postgres → Debezium → Kafka → Flink → ClickHouse를 Testcontainers로 띄우고, 고정 시드로 거래 305건을 넣은 뒤 ClickHouse 결과를 **Postgres와 대조**
+  - 1분 윈도우 30개, 계좌별 잔액, 이상거래 플래그가 모두 Postgres와 일치해야 통과
+  - `high_velocity`의 기대값은 같은 룰을 SQL 윈도우 함수로 독립적으로 다시 계산해 구함
+  - `FINAL` 없이 원본 테이블을 읽어 중복 0건 확인
+- **테스트 자체 검증**: 룰 경계를 일부러 1칸 바꾸면(`>`→`>=`, `<=`→`<`) 단위 테스트가 실패하고, 임계치를 `47,000`으로 바꾸면 E2E가 실패함을 확인
+
 ## 로드맵
 
 - [x] clickhouse-java 0.9.8로 업그레이드하고 드라이버 버그 우회 코드 제거 (업스트림 #2548에서 수정됨)
-- [ ] 테스트: Flink operator test harness 단위 테스트, Testcontainers E2E 정합성 테스트
+- [x] 테스트: Flink operator test harness 단위 테스트, Testcontainers E2E 정합성 테스트
 - [ ] 장애 주입(Flink/Connect/ClickHouse 강제 종료) 후 정합성 자동 대조
 - [ ] CDC `UPDATE`/`DELETE`(거래 정정·취소) 처리
 - [ ] Kafka 파티션 수 반영 및 처리량·지연(p50/p99) 측정

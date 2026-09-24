@@ -42,10 +42,23 @@ dependencies {
     // operator test harnesses (KeyedOneInputStreamOperatorTestHarness etc.)
     testImplementation("org.apache.flink:flink-streaming-java:$flinkVersion:tests")
     testImplementation("org.apache.flink:flink-runtime:$flinkVersion:tests")
+    testImplementation(platform("org.testcontainers:testcontainers-bom:2.0.5"))
+    testImplementation("org.testcontainers:testcontainers-junit-jupiter")
+    testImplementation("org.testcontainers:testcontainers-postgresql")
+    testImplementation("org.testcontainers:testcontainers-kafka")
+    testImplementation("org.postgresql:postgresql:42.7.13")
 }
 
+// Unit tests only; the Docker-backed pipeline test runs via `gradle e2eTest`.
 tasks.test {
-    useJUnitPlatform()
+    useJUnitPlatform { excludeTags("e2e") }
+}
+
+tasks.register<Test>("e2eTest") {
+    testClassesDirs = sourceSets.test.get().output.classesDirs
+    classpath = sourceSets.test.get().runtimeClasspath
+    useJUnitPlatform { includeTags("e2e") }
+    testLogging { showStandardStreams = true }
 }
 
 tasks.named<JavaExec>("run") {
